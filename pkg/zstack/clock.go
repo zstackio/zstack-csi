@@ -3,14 +3,17 @@ package zstack
 import (
 	"fmt"
 	"time"
+
+	"github.com/zstackio/zstack-sdk-go-v2/pkg/param"
 )
 
 // ZStack accepts an AccessKey request only when its Date header is within 15
 // minutes of the management node's clock. With the default global config
 // rest/checkTimeZone=false the zone in the header is ignored and only the wall
 // clock time is compared, while the SDK writes the header in the process's
-// local zone. The management node reports its zone only to authenticated
-// requests, so SyncTimeZone tries UTC offsets until one is accepted.
+// local zone. ZStack tells its time zone only to administrators, so
+// SyncTimeZone tries UTC offsets with a read the driver is allowed anyway
+// until one is accepted.
 //
 // Each attempt labels the wall clock "GMT": ZStack can always parse that label,
 // and it is the true zone for offset 0, which is what a management node with
@@ -38,15 +41,17 @@ func candidateOffsets() []int {
 }
 
 // SyncTimeZone sets the process's local time zone so that the SDK signs
-// requests with the management node's wall clock, and returns the zone the
-// management node reports. Call it before anything else uses the clock.
+// requests with the management node's wall clock, and returns the UTC offset
+// it found. Call it before anything else uses the clock.
 func (c *Cloud) SyncTimeZone() (string, error) {
+	q := param.NewQueryParam()
+	q.Limit(1)
 	var lastErr error
 	for _, offset := range candidateOffsets() {
 		time.Local = time.FixedZone("GMT", offset)
-		tz, err := c.cli.GetPlatformTimeZone()
+		_, err := c.cli.QueryVolume(&q)
 		if err == nil {
-			return fmt.Sprintf("%s (UTC%s)", tz.Timezone, tz.Offset), nil
+			return "UTC" + time.Now().Format("-07:00"), nil
 		}
 		if !isForbidden(err) {
 			return "", err

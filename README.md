@@ -33,15 +33,17 @@ qcow2 chains, provisioning), so the driver never touches the shared VG.
   global config `rest/checkTimeZone=false` ZStack compares the wall-clock time
   and ignores the zone. If ZStack later rejects the signature, for example after
   a daylight-saving change, the controller exits and detects it again on restart.
-- Kubernetes 1.25 or later, the minimum of the bundled sidecars. Snapshots
-  need the VolumeSnapshot CRDs and snapshot-controller from
+- Kubernetes 1.25 or later is the minimum of the bundled sidecars; only 1.35
+  has been tested (see below). Snapshots need the VolumeSnapshot CRDs and
+  snapshot-controller from
   [external-snapshotter](https://github.com/kubernetes-csi/external-snapshotter).
 - The driver namespace must allow privileged pods.
 
 ## Install
 
-1. In ZStack, create an AccessKey for an account that may manage volumes and
-   attach them to the node VMs, and look up the primary storage UUID.
+1. In ZStack, create an AccessKey as described in
+   [ZStack permissions](#zstack-permissions) and look up the primary storage
+   UUID.
 2. Build and push the image, or load the archive on every node:
 
    ```sh
@@ -73,31 +75,95 @@ block volume, a snapshot restored into a larger volume, and a clone.
 | `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. |
 | `csi.storage.k8s.io/fstype` | `ext4` (default) or `xfs`. |
 
-## Behavior and limits
+## ZStack permissions
 
-- Access modes: ReadWriteOnce as filesystem or raw block.
-  ReadWriteMany and ReadOnlyMany need `volumeMode: Block` and are served by
-  ZStack shared volumes (`ephemeral::shareable` with virtio-scsi), which
-  SharedBlock creates raw and thick provisioned and cannot snapshot. The
-  applications sharing the device must coordinate their writes, as with any
-  shared disk.
+The driver does not need an admin account. Attaching a volume requires owning
+the VM, so the AccessKey must belong to the identity that owns the node VMs;
+the volumes the driver creates belong to that identity too.
+
+- **Account AccessKey.** An AccessKey of the account that owns the node VMs.
+  ZStack applies no policy to an account's own key, so the driver gets every
+  permission of that account.
+- **Least privilege (IAM2).** Put the node VMs in an IAM2 project and create
+  the AccessKey for a project member whose only role is the one below. ZStack
+  only restricts keys of IAM2 members; it always makes a normal account's key
+  account-wide. With this role the driver passes all tests, and write APIs
+  outside it are denied.
+
+```sh
+zstack-cli CreateIAM2Project name=k8s
+zstack-cli ChangeResourceOwner accountUuid=<project account> resourceUuid=<node VM>   # each node VM
+zstack-cli CreateIAM2VirtualID name=csi-driver password=<password>
+zstack-cli AddIAM2VirtualIDsToProject projectUuid=<project> virtualIDUuids=<member>
+zstack-cli CreateRole name=zstack-csi-driver statements='<statements below>'
+zstack-cli AddRolesToIAM2VirtualID virtualIDUuid=<member> roleUuids=<role> projectUuid=<project>
+zstack-cli CreateAccessKey accountUuid=<project account> userUuid=<member>
+```
+
+```json
+[
+  {
+    "name": "zstack-csi-driver",
+    "effect": "Allow",
+    "actions": [
+      "org.zstack.header.storage.primary.APIQueryPrimaryStorageMsg",
+      "org.zstack.header.vm.APIQueryVmInstanceMsg",
+      "org.zstack.header.volume.APIQueryVolumeMsg",
+      "org.zstack.header.volume.APICreateDataVolumeMsg",
+      "org.zstack.header.volume.APICreateDataVolumeFromVolumeSnapshotMsg",
+      "org.zstack.header.volume.APIDeleteDataVolumeMsg",
+      "org.zstack.header.volume.APIExpungeDataVolumeMsg",
+      "org.zstack.header.volume.APIResizeDataVolumeMsg",
+      "org.zstack.header.volume.APIAttachDataVolumeToVmMsg",
+      "org.zstack.header.volume.APIDetachDataVolumeFromVmMsg",
+      "org.zstack.mevoco.APIQueryShareableVolumeVmInstanceRefMsg",
+      "org.zstack.header.volume.APICreateVolumeSnapshotMsg",
+      "org.zstack.header.storage.snapshot.APIQueryVolumeSnapshotMsg",
+      "org.zstack.header.storage.snapshot.APIDeleteVolumeSnapshotMsg"
+    ]
+  }
+]
+```
+
+GetVersion needs no credentials. Project members may run query APIs by default;
+they are listed for completeness. ZStack treats GetPlatformTimeZone as
+admin-only, which is why the driver detects the time zone without it.
+
+## Behavior
+
+- Access modes: ReadWriteOnce as filesystem or raw block; ReadWriteMany and
+  ReadOnlyMany as raw block on ZStack shared volumes (`ephemeral::shareable`
+  with virtio-scsi). Applications sharing a device must coordinate their writes
+  and bypass the page cache, as with any shared disk.
+- ReadOnlyMany volumes are set read-only on each node with `blockdev --setro`.
 - Cloning a PVC goes through a temporary ZStack snapshot that is deleted once
-  the new volume exists. Shared volumes cannot be cloned.
+  the new volume exists.
 - Sizes are rounded up to whole GiB.
 - Online expansion: the controller resizes the volume, the node grows the
   filesystem.
-- ZStack cannot resize shared (multi-node) volumes on SharedBlock. Kubernetes
-  marks such an expansion infeasible and the volume keeps its size; give
-  multi-node PVCs a StorageClass with `allowVolumeExpansion: false` to reject
-  the request up front.
-- ReadOnlyMany volumes are set read-only on each node with `blockdev --setro`.
-- A ZStack snapshot belongs to its volume and is removed with it, so
-  DeleteVolume fails with FailedPrecondition while the volume has snapshots.
-  Delete the VolumeSnapshots first.
 - XFS is created without `bigtime` and `inobtcount` so that node kernels older
   than 5.10 can mount it.
 - `node.maxVolumesPerNode` (default 24) should match the ZStack global config
   `kvm/dataVolume.maxNum`.
+
+## Known limitations
+
+- No topology: every node VM must run in a cluster attached to the primary
+  storage. A pod scheduled on another node stays in ContainerCreating because
+  the attach fails.
+- Multi-node access is raw block only; ext4 and xfs cannot be mounted on several
+  nodes at once, so ReadOnlyMany filesystem volumes are not supported either.
+- SharedBlock creates shared volumes raw and thick provisioned and cannot
+  snapshot, clone or resize them. Kubernetes marks such an expansion infeasible
+  and the volume keeps its size; give multi-node PVCs a StorageClass with
+  `allowVolumeExpansion: false` to reject the request up front.
+- A ZStack snapshot belongs to its volume and is removed with it, so
+  DeleteVolume fails with FailedPrecondition while the volume has snapshots.
+  Delete the VolumeSnapshots first.
+- zstack-sdk-go-v2 v0.0.10 drops ZStack's error text when an asynchronous API
+  call fails, so Kubernetes events show only `StatusCode: 503`; the reason is
+  in the ZStack management node log.
+- The image is built for x86_64 only.
 
 ## Tested with
 
@@ -115,7 +181,17 @@ another node, online expansion (ext4 and XFS), raw block volumes, a shared
 block volume written and read from two nodes, snapshot restore and cloning into
 larger volumes, thick provisioning, time zone detection with
 `rest/checkTimeZone` both false and true (including the restart after it
-changes), and full cleanup.
+changes), least-privilege IAM2 AccessKey, and full cleanup.
+
+Not tested yet:
+
+- Node operating systems other than Ubuntu 24.04, such as Kylin V10, openEuler
+  or other distributions with 4.19 kernels.
+- Kubernetes versions other than 1.35, and arm64 nodes.
+- ZStack versions other than 5.5.38 and primary storage other than SharedBlock
+  (Ceph, NFS and others).
+- Controller failover under load, large numbers of volumes or nodes, and
+  upgrading the driver while volumes are in use.
 
 ## Development
 
