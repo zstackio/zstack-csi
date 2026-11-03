@@ -1,0 +1,128 @@
+{{- $registry := .Values.sidecars.registry }}
+{{- $timeout := .Values.controller.timeout }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-controller
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-controller
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-controller
+    spec:
+      serviceAccountName: {{ .Release.Name }}-controller
+      priorityClassName: system-cluster-critical
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-controller
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: driver
+          image: {{ include "zstack-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --mode=controller
+            - --endpoint=unix:///csi/csi.sock
+            - --driver-name={{ .Values.driverName }}
+            - --v={{ .Values.controller.logLevel }}
+          env:
+            - name: ZSTACK_HOST
+              value: {{ required "zstack.host is required" .Values.zstack.host | quote }}
+            - name: ZSTACK_PORT
+              value: {{ .Values.zstack.port | quote }}
+            - name: TZ
+              value: {{ .Values.zstack.timeZone | quote }}
+            - name: ZSTACK_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zstack-csi.secretName" . }}
+                  key: accessKeyId
+            - name: ZSTACK_ACCESS_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "zstack-csi.secretName" . }}
+                  key: accessKeySecret
+          ports:
+            - name: healthz
+              containerPort: 9808
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 30
+            failureThreshold: 5
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-provisioner
+          image: {{ $registry }}/{{ .Values.sidecars.provisioner }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --timeout={{ $timeout }}
+            - --leader-election
+            - --leader-election-namespace={{ .Release.Namespace }}
+            - --extra-create-metadata
+            - --default-fstype={{ .Values.storageClass.fsType }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-attacher
+          image: {{ $registry }}/{{ .Values.sidecars.attacher }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --timeout={{ $timeout }}
+            - --leader-election
+            - --leader-election-namespace={{ .Release.Namespace }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-resizer
+          image: {{ $registry }}/{{ .Values.sidecars.resizer }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --timeout={{ $timeout }}
+            - --leader-election
+            - --leader-election-namespace={{ .Release.Namespace }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        {{- if .Values.snapshot.enabled }}
+        - name: csi-snapshotter
+          image: {{ $registry }}/{{ .Values.sidecars.snapshotter }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --timeout={{ $timeout }}
+            - --leader-election
+            - --leader-election-namespace={{ .Release.Namespace }}
+            - --extra-create-metadata
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        {{- end }}
+        - name: liveness-probe
+          image: {{ $registry }}/{{ .Values.sidecars.livenessProbe }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --http-endpoint=:9808
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+      volumes:
+        - name: socket-dir
+          emptyDir: {}

@@ -1,0 +1,30 @@
+{{- if .Values.storageClass.create }}
+{{- $sc := .Values.storageClass }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ $sc.name }}
+  {{- if $sc.isDefault }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  {{- end }}
+provisioner: {{ .Values.driverName }}
+parameters:
+  primaryStorageUuid: {{ required "storageClass.primaryStorageUuid is required" $sc.primaryStorageUuid | quote }}
+  {{- with $sc.provisioning }}
+  provisioning: {{ . | quote }}
+  {{- end }}
+  csi.storage.k8s.io/fstype: {{ $sc.fsType }}
+reclaimPolicy: {{ $sc.reclaimPolicy }}
+volumeBindingMode: {{ $sc.volumeBindingMode }}
+allowVolumeExpansion: {{ $sc.allowVolumeExpansion }}
+{{- end }}
+{{- if .Values.volumeSnapshotClass.create }}
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ .Values.volumeSnapshotClass.name }}
+driver: {{ .Values.driverName }}
+deletionPolicy: {{ .Values.volumeSnapshotClass.deletionPolicy }}
+{{- end }}

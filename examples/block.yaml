@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: block-pvc
+spec:
+  storageClassName: zstack-disk
+  volumeMode: Block
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: block-app
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "dd if=/dev/zero of=/dev/xvda bs=1M count=10 && sleep 3600"]
+      volumeDevices:
+        - name: data
+          devicePath: /dev/xvda
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: block-pvc

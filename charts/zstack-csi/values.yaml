@@ -1,0 +1,68 @@
+driverName: disk.csi.zstack.io
+
+image:
+  repository: zstack-csi
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+sidecars:
+  registry: registry.k8s.io/sig-storage
+  provisioner: csi-provisioner:v6.4.0
+  attacher: csi-attacher:v4.13.0
+  resizer: csi-resizer:v2.3.0
+  snapshotter: csi-snapshotter:v8.7.0
+  nodeDriverRegistrar: csi-node-driver-registrar:v2.18.0
+  livenessProbe: livenessprobe:v2.20.0
+
+# ZStack management node API reached by the controller with an AccessKey.
+zstack:
+  host: ""
+  port: 8080
+  # Time zone of the management nodes. With the default rest/checkTimeZone=false
+  # ZStack compares the AccessKey request Date with its local time ignoring the
+  # zone, so the controller has to sign requests in the same zone.
+  timeZone: Asia/Shanghai
+  # Name of an existing Secret with keys accessKeyId and accessKeySecret.
+  # When empty the chart creates one from the two values below.
+  existingSecret: ""
+  accessKeyId: ""
+  accessKeySecret: ""
+
+controller:
+  replicas: 2
+  # ZStack operations such as attaching a disk can take minutes.
+  timeout: 300s
+  logLevel: 2
+  nodeSelector: {}
+  tolerations: []
+
+node:
+  kubeletDir: /var/lib/kubelet
+  # Keep in line with the ZStack global config kvm/dataVolume.maxNum.
+  maxVolumesPerNode: 24
+  logLevel: 2
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists
+
+# Requires the VolumeSnapshot CRDs and snapshot-controller in the cluster.
+snapshot:
+  enabled: true
+
+storageClass:
+  create: true
+  name: zstack-disk
+  isDefault: false
+  primaryStorageUuid: ""
+  # thin or thick; empty keeps the primary storage default.
+  provisioning: ""
+  fsType: ext4
+  reclaimPolicy: Delete
+  volumeBindingMode: WaitForFirstConsumer
+  allowVolumeExpansion: true
+
+volumeSnapshotClass:
+  create: false
+  name: zstack-disk-snapshot
+  deletionPolicy: Delete
