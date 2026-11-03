@@ -2,6 +2,6 @@ apiVersion: v2
 name: zstack-csi
 description: CSI driver that provisions ZStack data volumes for Kubernetes nodes running as ZStack VMs
 type: application
-version: 0.2.4
-appVersion: "0.2.4"
+version: 0.3.0
+appVersion: "0.3.0"
 kubeVersion: ">=1.25.0-0"

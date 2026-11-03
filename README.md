@@ -44,25 +44,25 @@ qcow2 chains, provisioning), so the driver never touches the shared VG.
 1. In ZStack, create an AccessKey as described in
    [ZStack permissions](#zstack-permissions) and look up the primary storage
    UUID.
-2. Build and push the image, or load the archive on every node:
-
-   ```sh
-   make image VERSION=0.1.0              # or: make image-save
-   ```
+2. Make the images available. `make package` builds the offline package
+   `_output/zstack-csi-<version>.tgz` (driver and sidecar images, chart,
+   VolumeSnapshot components, docs); its `INSTALL.md` walks through pushing
+   the images to a registry or importing them on the nodes.
 
 3. Install the chart:
 
    ```sh
    helm install zstack-csi charts/zstack-csi -n kube-system \
-     --set image.repository=<registry>/zstack-csi \
+     --set imgurl=<registry prefix, empty to use the original image names> \
      --set zstack.host=<management node IP> \
      --set zstack.accessKeyId=<id> --set zstack.accessKeySecret=<secret> \
      --set storageClass.primaryStorageUuid=<primary storage UUID> \
      --set volumeSnapshotClass.create=true
    ```
 
-   Use `zstack.existingSecret` instead of the two key values to keep the
-   AccessKey out of Helm values. `make manifests` renders plain YAML.
+   `imgurl` is prepended to every image, as in zbs-csi. Use
+   `zstack.existingSecret` instead of the two key values to keep the AccessKey
+   out of Helm values. `make manifests` renders plain YAML.
 
 `examples/` has a filesystem volume, a raw block volume, a multi-node shared
 block volume, a snapshot restored into a larger volume, and a clone.
