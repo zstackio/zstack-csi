@@ -1,5 +1,5 @@
 {{- define "zstack-csi.image" -}}
-{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+{{ .Values.imgurl }}{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
 {{- end }}
 
 {{- define "zstack-csi.secretName" -}}

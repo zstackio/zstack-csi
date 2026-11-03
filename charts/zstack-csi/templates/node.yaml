@@ -1,4 +1,3 @@
-{{- $registry := .Values.sidecars.registry }}
 {{- $kubeletDir := .Values.node.kubeletDir }}
 apiVersion: apps/v1
 kind: DaemonSet
@@ -53,7 +52,7 @@ spec:
             - name: dev
               mountPath: /dev
         - name: node-driver-registrar
-          image: {{ $registry }}/{{ .Values.sidecars.nodeDriverRegistrar }}
+          image: {{ .Values.imgurl }}{{ .Values.sidecars.nodeDriverRegistrar }}
           args:
             - --csi-address=/csi/csi.sock
             - --kubelet-registration-path={{ include "zstack-csi.socketDir" . }}/csi.sock
@@ -63,7 +62,7 @@ spec:
             - name: registration-dir
               mountPath: /registration
         - name: liveness-probe
-          image: {{ $registry }}/{{ .Values.sidecars.livenessProbe }}
+          image: {{ .Values.imgurl }}{{ .Values.sidecars.livenessProbe }}
           args:
             - --csi-address=/csi/csi.sock
             - --http-endpoint=:9809
