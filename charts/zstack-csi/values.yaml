@@ -19,10 +19,6 @@ sidecars:
 zstack:
   host: ""
   port: 8080
-  # Time zone of the management nodes. With the default rest/checkTimeZone=false
-  # ZStack compares the AccessKey request Date with its local time ignoring the
-  # zone, so the controller has to sign requests in the same zone.
-  timeZone: Asia/Shanghai
   # Name of an existing Secret with keys accessKeyId and accessKeySecret.
   # When empty the chart creates one from the two values below.
   existingSecret: ""

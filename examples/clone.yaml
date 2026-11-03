@@ -1,0 +1,14 @@
+# Clone fs-pvc from filesystem.yaml into a new, larger volume.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fs-clone
+spec:
+  storageClassName: zstack-disk
+  accessModes: [ReadWriteOnce]
+  dataSource:
+    kind: PersistentVolumeClaim
+    name: fs-pvc
+  resources:
+    requests:
+      storage: 8Gi

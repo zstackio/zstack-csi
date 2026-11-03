@@ -52,19 +52,23 @@ func TestValidateCapabilities(t *testing.T) {
 			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: fs}},
 		}
 	}
-	block := &csi.VolumeCapability{
-		AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
-		AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
+	blockCap := func(mode csi.VolumeCapability_AccessMode_Mode) *csi.VolumeCapability {
+		return &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: mode},
+			AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
+		}
 	}
 	ok := [][]*csi.VolumeCapability{
 		{mountCap(csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, "")},
 		{mountCap(csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY, "xfs")},
-		{block},
+		{blockCap(csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER)},
+		{blockCap(csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER)},
 	}
 	bad := [][]*csi.VolumeCapability{
 		nil,
 		{mountCap(csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER, "ext4")},
 		{mountCap(csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER, "ext4")},
+		{mountCap(csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY, "ext4")},
 		{mountCap(csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, "ntfs")},
 		{{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}}},
 	}

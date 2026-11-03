@@ -27,10 +27,12 @@ qcow2 chains, provisioning), so the driver never touches the shared VG.
 - All node VMs run in clusters attached to the primary storage named in the
   StorageClass; the driver does not report topology.
 - The controller pods can reach the ZStack management node API (port 8080).
-- `zstack.timeZone` (default `Asia/Shanghai`) matches the management nodes'
-  time zone. With the default global config `rest/checkTimeZone=false`, ZStack
-  compares the AccessKey request time with its local clock ignoring the zone and
-  rejects requests signed in another zone with 403 `requestTimeTooSkewed`.
+- Node and management node clocks are synchronized (NTP). ZStack accepts an
+  AccessKey request only within 15 minutes of its own clock; the controller
+  detects the management node's time zone at start-up, because with the default
+  global config `rest/checkTimeZone=false` ZStack compares the wall-clock time
+  and ignores the zone. If ZStack later rejects the signature, for example after
+  a daylight-saving change, the controller exits and detects it again on restart.
 - Kubernetes 1.25 or later, the minimum of the bundled sidecars. Snapshots
   need the VolumeSnapshot CRDs and snapshot-controller from
   [external-snapshotter](https://github.com/kubernetes-csi/external-snapshotter).
@@ -60,8 +62,8 @@ qcow2 chains, provisioning), so the driver never touches the shared VG.
    Use `zstack.existingSecret` instead of the two key values to keep the
    AccessKey out of Helm values. `make manifests` renders plain YAML.
 
-`examples/` has a filesystem volume, a raw block volume, and a snapshot restored
-into a larger volume.
+`examples/` has a filesystem volume, a raw block volume, a multi-node shared
+block volume, a snapshot restored into a larger volume, and a clone.
 
 ## StorageClass parameters
 
@@ -73,8 +75,14 @@ into a larger volume.
 
 ## Behavior and limits
 
-- Access modes: ReadWriteOnce (single node) as filesystem or raw block.
-  Multi-node access and volume cloning are not supported.
+- Access modes: ReadWriteOnce as filesystem or raw block.
+  ReadWriteMany and ReadOnlyMany need `volumeMode: Block` and are served by
+  ZStack shared volumes (`ephemeral::shareable` with virtio-scsi), which
+  SharedBlock creates raw and thick provisioned and cannot snapshot. The
+  applications sharing the device must coordinate their writes, as with any
+  shared disk.
+- Cloning a PVC goes through a temporary ZStack snapshot that is deleted once
+  the new volume exists. Shared volumes cannot be cloned.
 - Sizes are rounded up to whole GiB.
 - Online expansion: the controller resizes the volume, the node grows the
   filesystem.
@@ -96,10 +104,13 @@ into a larger volume.
 | Sidecars | as pinned in `charts/zstack-csi/values.yaml` |
 
 [csi-sanity](https://github.com/kubernetes-csi/csi-test) v5.6.0 against the live
-ZStack API: 62 passed, 0 failed; skipped specs cover capabilities the driver
-does not declare. End-to-end checks covered dynamic provisioning, moving a pod
-to another node, online expansion (ext4 and XFS), raw block volumes, snapshot
-restore into a larger volume, thick provisioning, and full cleanup.
+ZStack API passes; skipped specs cover capabilities the driver does not
+declare. End-to-end checks covered dynamic provisioning, moving a pod to
+another node, online expansion (ext4 and XFS), raw block volumes, a shared
+block volume written and read from two nodes, snapshot restore and cloning into
+larger volumes, thick provisioning, time zone detection with
+`rest/checkTimeZone` both false and true (including the restart after it
+changes), and full cleanup.
 
 ## Development
 

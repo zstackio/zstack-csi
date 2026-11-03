@@ -143,7 +143,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	defer ns.locks.Release(volID)
 
 	options := []string{"bind"}
-	if req.GetReadonly() || vc.GetAccessMode().GetMode() == csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY {
+	if req.GetReadonly() || isReadOnly(vc) {
 		options = append(options, "ro")
 	}
 

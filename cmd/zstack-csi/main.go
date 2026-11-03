@@ -49,7 +49,11 @@ func run(cfg driver.Config) error {
 		if err != nil {
 			return fmt.Errorf("connect to ZStack API: %w", err)
 		}
-		klog.Infof("connected to ZStack %s", v)
+		tz, err := c.SyncTimeZone()
+		if err != nil {
+			return err
+		}
+		klog.Infof("connected to ZStack %s, management node time zone %s", v, tz)
 		cloud = c
 	case driver.ModeNode:
 	default:

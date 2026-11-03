@@ -2,6 +2,8 @@ package driver
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -18,9 +20,14 @@ const (
 	ParamProvisioning       = "provisioning"
 )
 
+const (
+	thinProvisioning  = "ThinProvisioning"
+	thickProvisioning = "ThickProvisioning"
+)
+
 var provisioningStrategies = map[string]string{
-	"thin":  "ThinProvisioning",
-	"thick": "ThickProvisioning",
+	"thin":  thinProvisioning,
+	"thick": thickProvisioning,
 }
 
 var controllerCapabilities = []csi.ControllerServiceCapability_RPC_Type{
@@ -28,6 +35,7 @@ var controllerCapabilities = []csi.ControllerServiceCapability_RPC_Type{
 	csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
 	csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 	csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
+	csi.ControllerServiceCapability_RPC_CLONE_VOLUME,
 }
 
 type controllerServer struct {
@@ -45,7 +53,8 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 	if name == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume name is required")
 	}
-	if err := validateCapabilities(req.GetVolumeCapabilities()); err != nil {
+	caps := req.GetVolumeCapabilities()
+	if err := validateCapabilities(caps); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	size, err := volumeSize(req.GetCapacityRange())
@@ -57,17 +66,14 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 	if psUUID == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "StorageClass parameter %s is required", ParamPrimaryStorageUUID)
 	}
-	var systemTags []string
-	if p := params[ParamProvisioning]; p != "" {
-		strategy, ok := provisioningStrategies[strings.ToLower(p)]
-		if !ok {
-			return nil, status.Errorf(codes.InvalidArgument, "%s must be thin or thick, got %q", ParamProvisioning, p)
-		}
-		systemTags = append(systemTags, zstack.ProvisioningTag(strategy))
+	shared := isMultiNode(caps)
+	systemTags, err := volumeTags(params[ParamProvisioning], shared)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	source := req.GetVolumeContentSource()
-	if source.GetVolume() != nil {
-		return nil, status.Error(codes.InvalidArgument, "volume cloning is not supported")
+	if shared && source != nil {
+		return nil, status.Error(codes.InvalidArgument, "multi-node volumes cannot be created from a snapshot or another volume")
 	}
 
 	uuid := resourceUUID("volume", name)
@@ -83,26 +89,56 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 			return nil, status.Errorf(codes.Aborted, "volume %s is being deleted", uuid)
 		}
 		limit := req.GetCapacityRange().GetLimitBytes()
-		if vol.Size < size || (limit > 0 && vol.Size > limit) {
-			return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists with size %d", name, vol.Size)
+		if vol.Size < size || (limit > 0 && vol.Size > limit) || vol.IsShareable != shared {
+			return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists with size %d, shared %t", name, vol.Size, vol.IsShareable)
+		}
+		if source.GetVolume() != nil {
+			if err := cs.deleteCloneSnapshot(name); err != nil {
+				return nil, err
+			}
 		}
 		return createVolumeResponse(vol, source), nil
 	case !zstack.IsNotFound(err):
 		return nil, status.Errorf(codes.Internal, "get volume %s: %v", uuid, err)
 	}
 
-	if snap := source.GetSnapshot(); snap != nil {
-		vol, err = cs.createVolumeFromSnapshot(uuid, name, snap.GetSnapshotId(), psUUID, size)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		vol, err = cs.cloud.CreateVolume(uuid, name, size, psUUID, systemTags)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "create volume %s: %v", name, err)
+	switch {
+	case source.GetSnapshot() != nil:
+		vol, err = cs.createVolumeFromSnapshot(uuid, name, source.GetSnapshot().GetSnapshotId(), psUUID, size)
+	case source.GetVolume() != nil:
+		vol, err = cs.cloneVolume(uuid, name, source.GetVolume().GetVolumeId(), psUUID, size)
+	default:
+		if vol, err = cs.cloud.CreateVolume(uuid, name, size, psUUID, systemTags); err != nil {
+			err = status.Errorf(codes.Internal, "create volume %s: %v", name, err)
 		}
 	}
+	if err != nil {
+		return nil, err
+	}
 	return createVolumeResponse(vol, source), nil
+}
+
+// volumeTags returns the system tags for a new volume. Multi-node volumes are
+// ZStack shared volumes, which SharedBlock only provisions thick.
+func volumeTags(provisioning string, shared bool) ([]string, error) {
+	strategy := ""
+	if provisioning != "" {
+		s, ok := provisioningStrategies[strings.ToLower(provisioning)]
+		if !ok {
+			return nil, fmt.Errorf("%s must be thin or thick, got %q", ParamProvisioning, provisioning)
+		}
+		strategy = s
+	}
+	if !shared {
+		if strategy == "" {
+			return nil, nil
+		}
+		return []string{zstack.ProvisioningTag(strategy)}, nil
+	}
+	if strategy == thinProvisioning {
+		return nil, fmt.Errorf("multi-node volumes are shared volumes, which are thick provisioned")
+	}
+	return append(slices.Clone(zstack.SharedVolumeTags), zstack.ProvisioningTag(thickProvisioning)), nil
 }
 
 func (cs *controllerServer) createVolumeFromSnapshot(uuid, name, snapshotID, psUUID string, size int64) (*zstack.Volume, error) {
@@ -125,6 +161,54 @@ func (cs *controllerServer) createVolumeFromSnapshot(uuid, name, snapshotID, psU
 		}
 	}
 	return vol, nil
+}
+
+// cloneVolume copies a volume through a temporary snapshot because ZStack has
+// no direct volume copy. A volume created from a snapshot does not depend on
+// it, so the snapshot is removed once the copy exists.
+func (cs *controllerServer) cloneVolume(uuid, name, sourceID, psUUID string, size int64) (*zstack.Volume, error) {
+	if !isUUID(sourceID) {
+		return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceID)
+	}
+	src, err := cs.getLiveVolume(sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if src.IsShareable {
+		return nil, status.Errorf(codes.InvalidArgument, "shared volume %s cannot be cloned", sourceID)
+	}
+	if size < src.Size {
+		return nil, status.Errorf(codes.OutOfRange, "requested size %d is smaller than source volume size %d", size, src.Size)
+	}
+	snapUUID := resourceUUID("clone", name)
+	if _, err := cs.cloud.GetSnapshot(snapUUID); zstack.IsNotFound(err) {
+		if _, err := cs.cloud.CreateSnapshot(snapUUID, "csi-clone-"+name, sourceID); err != nil {
+			return nil, status.Errorf(codes.Internal, "snapshot source volume %s: %v", sourceID, err)
+		}
+	} else if err != nil {
+		return nil, status.Errorf(codes.Internal, "get snapshot %s: %v", snapUUID, err)
+	}
+	vol, err := cs.createVolumeFromSnapshot(uuid, name, snapUUID, psUUID, size)
+	if err != nil {
+		return nil, err
+	}
+	if err := cs.deleteCloneSnapshot(name); err != nil {
+		return nil, err
+	}
+	return vol, nil
+}
+
+func (cs *controllerServer) deleteCloneSnapshot(name string) error {
+	id := resourceUUID("clone", name)
+	if _, err := cs.cloud.GetSnapshot(id); zstack.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return status.Errorf(codes.Internal, "get snapshot %s: %v", id, err)
+	}
+	if err := cs.cloud.DeleteSnapshot(id); err != nil {
+		return status.Errorf(codes.Internal, "delete temporary clone snapshot %s: %v", id, err)
+	}
+	return nil
 }
 
 func createVolumeResponse(vol *zstack.Volume, source *csi.VolumeContentSource) *csi.CreateVolumeResponse {
@@ -155,8 +239,12 @@ func (cs *controllerServer) DeleteVolume(_ context.Context, req *csi.DeleteVolum
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "get volume %s: %v", id, err)
 	}
-	if vol.VmInstanceUuid != "" {
-		return nil, status.Errorf(codes.FailedPrecondition, "volume %s is attached to VM %s", id, vol.VmInstanceUuid)
+	vms, err := cs.cloud.AttachedVMs(vol)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get VMs of volume %s: %v", id, err)
+	}
+	if len(vms) > 0 {
+		return nil, status.Errorf(codes.FailedPrecondition, "volume %s is attached to VMs %v", id, vms)
 	}
 	// ZStack snapshots belong to their volume and are removed with it, so a
 	// volume is kept while VolumeSnapshots still depend on it.
@@ -205,12 +293,15 @@ func (cs *controllerServer) ControllerPublishVolume(_ context.Context, req *csi.
 		}
 		return nil, status.Errorf(codes.Internal, "get VM %s: %v", nodeID, err)
 	}
-	switch vol.VmInstanceUuid {
-	case nodeID:
+	vms, err := cs.cloud.AttachedVMs(vol)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get VMs of volume %s: %v", volID, err)
+	}
+	if slices.Contains(vms, nodeID) {
 		return &csi.ControllerPublishVolumeResponse{}, nil
-	case "":
-	default:
-		return nil, status.Errorf(codes.FailedPrecondition, "volume %s is attached to VM %s", volID, vol.VmInstanceUuid)
+	}
+	if len(vms) > 0 && !vol.IsShareable {
+		return nil, status.Errorf(codes.FailedPrecondition, "volume %s is attached to VM %s", volID, vms[0])
 	}
 	if err := cs.cloud.AttachVolume(volID, nodeID); err != nil {
 		return nil, status.Errorf(codes.Internal, "attach volume %s to VM %s: %v", volID, nodeID, err)
@@ -238,12 +329,18 @@ func (cs *controllerServer) ControllerUnpublishVolume(_ context.Context, req *cs
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "get volume %s: %v", volID, err)
 	}
-	attachedTo := vol.VmInstanceUuid
-	if attachedTo == "" || (nodeID != "" && attachedTo != nodeID) {
-		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	vms, err := cs.cloud.AttachedVMs(vol)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get VMs of volume %s: %v", volID, err)
 	}
-	if err := cs.cloud.DetachVolume(volID, attachedTo); err != nil {
-		return nil, status.Errorf(codes.Internal, "detach volume %s from VM %s: %v", volID, attachedTo, err)
+	// An empty node ID asks to unpublish the volume from every node.
+	for _, vm := range vms {
+		if nodeID != "" && vm != nodeID {
+			continue
+		}
+		if err := cs.cloud.DetachVolume(volID, vm); err != nil {
+			return nil, status.Errorf(codes.Internal, "detach volume %s from VM %s: %v", volID, vm, err)
+		}
 	}
 	return &csi.ControllerUnpublishVolumeResponse{}, nil
 }
@@ -259,11 +356,15 @@ func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *c
 	if !isUUID(volID) {
 		return nil, status.Errorf(codes.NotFound, "volume %s not found", volID)
 	}
-	if _, err := cs.getLiveVolume(volID); err != nil {
+	vol, err := cs.getLiveVolume(volID)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateCapabilities(req.GetVolumeCapabilities()); err != nil {
 		return &csi.ValidateVolumeCapabilitiesResponse{Message: err.Error()}, nil
+	}
+	if isMultiNode(req.GetVolumeCapabilities()) && !vol.IsShareable {
+		return &csi.ValidateVolumeCapabilitiesResponse{Message: "multi-node access needs a shared volume"}, nil
 	}
 	return &csi.ValidateVolumeCapabilitiesResponse{Confirmed: &csi.ValidateVolumeCapabilitiesResponse_Confirmed{
 		VolumeContext:      req.GetVolumeContext(),

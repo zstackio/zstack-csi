@@ -46,8 +46,6 @@ spec:
               value: {{ required "zstack.host is required" .Values.zstack.host | quote }}
             - name: ZSTACK_PORT
               value: {{ .Values.zstack.port | quote }}
-            - name: TZ
-              value: {{ .Values.zstack.timeZone | quote }}
             - name: ZSTACK_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:

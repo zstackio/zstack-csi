@@ -56,9 +56,17 @@ func volumeSize(r *csi.CapacityRange) (int64, error) {
 	return size, nil
 }
 
-var supportedAccessModes = map[csi.VolumeCapability_AccessMode_Mode]bool{
+var singleNodeModes = map[csi.VolumeCapability_AccessMode_Mode]bool{
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER:      true,
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY: true,
+}
+
+// Multi-node modes are served by ZStack shared volumes as raw block devices;
+// ext4 and xfs cannot be mounted on several nodes at once.
+var multiNodeModes = map[csi.VolumeCapability_AccessMode_Mode]bool{
+	csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY:   true,
+	csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER: true,
+	csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:  true,
 }
 
 var supportedFsTypes = map[string]bool{"": true, "ext4": true, "ext3": true, "xfs": true}
@@ -71,12 +79,16 @@ func validateCapabilities(caps []*csi.VolumeCapability) error {
 		if c.GetAccessMode() == nil {
 			return fmt.Errorf("access mode is required")
 		}
-		if !supportedAccessModes[c.GetAccessMode().GetMode()] {
-			return fmt.Errorf("access mode %s is not supported", c.GetAccessMode().GetMode())
+		mode := c.GetAccessMode().GetMode()
+		if !singleNodeModes[mode] && !multiNodeModes[mode] {
+			return fmt.Errorf("access mode %s is not supported", mode)
 		}
 		switch {
 		case c.GetBlock() != nil:
 		case c.GetMount() != nil:
+			if multiNodeModes[mode] {
+				return fmt.Errorf("access mode %s needs volumeMode Block", mode)
+			}
 			if fs := c.GetMount().GetFsType(); !supportedFsTypes[fs] {
 				return fmt.Errorf("filesystem type %q is not supported", fs)
 			}
@@ -85,6 +97,21 @@ func validateCapabilities(caps []*csi.VolumeCapability) error {
 		}
 	}
 	return nil
+}
+
+func isMultiNode(caps []*csi.VolumeCapability) bool {
+	for _, c := range caps {
+		if multiNodeModes[c.GetAccessMode().GetMode()] {
+			return true
+		}
+	}
+	return false
+}
+
+func isReadOnly(c *csi.VolumeCapability) bool {
+	mode := c.GetAccessMode().GetMode()
+	return mode == csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY ||
+		mode == csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY
 }
 
 // keyLocks rejects concurrent operations on the same volume or snapshot; the
