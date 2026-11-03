@@ -79,7 +79,14 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		return nil, status.Errorf(codes.Internal, "find disk of volume %s: %v", volID, err)
 	}
 	// Raw block volumes are bind mounted straight from the device at publish.
+	// Containers reach the device through its own node, which ignores a
+	// read-only bind mount, so read-only access is set on the device itself.
 	if vc.GetBlock() != nil {
+		if isReadOnly(vc) {
+			if out, err := ns.mounter.Exec.Command("blockdev", "--setro", device).CombinedOutput(); err != nil {
+				return nil, status.Errorf(codes.Internal, "set %s read-only: %v: %s", device, err, out)
+			}
+		}
 		return &csi.NodeStageVolumeResponse{}, nil
 	}
 

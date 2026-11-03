@@ -401,6 +401,15 @@ func (cs *controllerServer) ControllerExpandVolume(_ context.Context, req *csi.C
 	if vol.Size >= size {
 		return &csi.ControllerExpandVolumeResponse{CapacityBytes: vol.Size, NodeExpansionRequired: nodeExpansion}, nil
 	}
+	if vol.IsShareable {
+		psType, err := cs.cloud.PrimaryStorageType(vol.PrimaryStorageUuid)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "get primary storage of volume %s: %v", volID, err)
+		}
+		if psType == zstack.SharedBlockType {
+			return nil, status.Errorf(codes.InvalidArgument, "ZStack cannot resize shared volume %s on SharedBlock primary storage", volID)
+		}
+	}
 	if vol, err = cs.cloud.ResizeVolume(volID, size); err != nil {
 		return nil, status.Errorf(codes.Internal, "resize volume %s: %v", volID, err)
 	}

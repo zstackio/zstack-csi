@@ -19,6 +19,7 @@ import (
 const (
 	VolumeStatusDeleted = "Deleted"
 	SnapshotStatusReady = "Ready"
+	SharedBlockType     = "SharedBlock"
 	defaultPort         = 8080
 	apiContextPath      = "zstack"
 )
@@ -182,6 +183,19 @@ func (c *Cloud) AttachedVMs(vol *Volume) ([]string, error) {
 		vms = append(vms, r.VmInstanceUuid)
 	}
 	return vms, nil
+}
+
+func (c *Cloud) PrimaryStorageType(uuid string) (string, error) {
+	q := param.NewQueryParam()
+	q.AddQ("uuid=" + uuid)
+	ps, err := c.cli.QueryPrimaryStorage(&q)
+	if err != nil {
+		return "", check(err)
+	}
+	if len(ps) == 0 {
+		return "", fmt.Errorf("primary storage %s not found", uuid)
+	}
+	return ps[0].Type, nil
 }
 
 func (c *Cloud) GetSnapshot(uuid string) (*Snapshot, error) {

@@ -86,6 +86,11 @@ block volume, a snapshot restored into a larger volume, and a clone.
 - Sizes are rounded up to whole GiB.
 - Online expansion: the controller resizes the volume, the node grows the
   filesystem.
+- ZStack cannot resize shared (multi-node) volumes on SharedBlock. Kubernetes
+  marks such an expansion infeasible and the volume keeps its size; give
+  multi-node PVCs a StorageClass with `allowVolumeExpansion: false` to reject
+  the request up front.
+- ReadOnlyMany volumes are set read-only on each node with `blockdev --setro`.
 - A ZStack snapshot belongs to its volume and is removed with it, so
   DeleteVolume fails with FailedPrecondition while the volume has snapshots.
   Delete the VolumeSnapshots first.
