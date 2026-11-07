@@ -179,9 +179,6 @@ admin-only, which is why the driver detects the time zone without it.
 - A ZStack snapshot belongs to its volume and is removed with it, so
   DeleteVolume fails with FailedPrecondition while the volume has snapshots.
   Delete the VolumeSnapshots first.
-- zstack-sdk-go-v2 v0.0.10 drops ZStack's error text when an asynchronous API
-  call fails, so Kubernetes events show only `StatusCode: 503`; the reason is
-  in the ZStack management node log.
 - The image is built for x86_64 only.
 
 ## Tested with
