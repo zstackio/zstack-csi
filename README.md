@@ -12,6 +12,10 @@ VMs; the driver works the way cloud-provider block CSI drivers do:
 ZStack keeps doing everything storage-specific (LV activation and locking,
 qcow2 chains, provisioning), so the driver never touches the shared VG.
 
+[ARCHITECTURE.md](ARCHITECTURE.md) (in Chinese) explains the data path, how a
+node learns its VM UUID, and how this model differs from storage-native CSI
+drivers such as XSKY, Ceph and ZBS.
+
 | CSI call | ZStack API |
 |---|---|
 | CreateVolume | CreateDataVolume (or CreateDataVolumeFromVolumeSnapshot) |
