@@ -12,22 +12,26 @@ func TestVolumeTags(t *testing.T) {
 		name         string
 		provisioning string
 		shared       bool
-		sharedBlock  bool
+		psType       string
 		want         []string
 		wantFail     bool
 	}{
-		{"single-node default", "", false, true, nil, false},
-		{"single-node thin", "thin", false, true, []string{thin}, false},
-		{"single-node thick", "Thick", false, false, []string{thick}, false},
-		{"unknown strategy", "eager", false, false, nil, true},
-		{"SharedBlock shared default", "", true, true, []string{shareable, scsi, thick}, false},
-		{"SharedBlock shared thick", "thick", true, true, []string{shareable, scsi, thick}, false},
-		{"SharedBlock shared thin", "thin", true, true, nil, true},
-		{"other storage shared default", "", true, false, []string{shareable, scsi}, false},
-		{"other storage shared thin", "thin", true, false, []string{shareable, scsi, thin}, false},
+		{"single-node default", "", false, "SharedBlock", nil, false},
+		{"single-node thin", "thin", false, "SharedBlock", []string{thin}, false},
+		{"single-node thick", "Thick", false, "NFS", []string{thick}, false},
+		{"unknown strategy", "eager", false, "Ceph", nil, true},
+		{"SharedBlock shared default", "", true, "SharedBlock", []string{shareable, scsi, thick}, false},
+		{"SharedBlock shared thick", "thick", true, "SharedBlock", []string{shareable, scsi, thick}, false},
+		{"SharedBlock shared thin", "thin", true, "SharedBlock", nil, true},
+		{"Ceph shared default", "", true, "Ceph", []string{shareable, scsi}, false},
+		{"Addon shared thin", "thin", true, "Addon", []string{shareable, scsi, thin}, false},
+		{"NFS shared", "", true, "NFS", nil, true},
+		{"SharedMountPoint shared", "", true, "SharedMountPoint", nil, true},
+		{"local storage single-node", "", false, "LocalStorage", nil, true},
+		{"local storage shared", "", true, "LocalStorage", nil, true},
 	}
 	for _, c := range cases {
-		got, err := volumeTags(c.provisioning, c.shared, c.sharedBlock)
+		got, err := volumeTags(c.provisioning, c.shared, c.psType)
 		if (err != nil) != c.wantFail || !slices.Equal(got, c.want) {
 			t.Errorf("%s: got %v, %v; want %v, fail=%v", c.name, got, err, c.want, c.wantFail)
 		}

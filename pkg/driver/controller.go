@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/klog/v2"
 
 	"github.com/zstackio/zstack-csi/pkg/zstack"
 )
@@ -66,16 +67,12 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 	if psUUID == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "StorageClass parameter %s is required", ParamPrimaryStorageUUID)
 	}
-	shared := isMultiNode(caps)
-	sharedBlock := false
-	if shared {
-		psType, err := cs.cloud.PrimaryStorageType(psUUID)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "get primary storage %s: %v", psUUID, err)
-		}
-		sharedBlock = psType == zstack.SharedBlockType
+	psType, err := cs.cloud.PrimaryStorageType(psUUID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get primary storage %s: %v", psUUID, err)
 	}
-	systemTags, err := volumeTags(params[ParamProvisioning], shared, sharedBlock)
+	shared := isMultiNode(caps)
+	systemTags, err := volumeTags(params[ParamProvisioning], shared, psType)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -92,6 +89,11 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 
 	vol, err := cs.cloud.GetVolume(uuid)
 	switch {
+	case err == nil && vol.Status == zstack.VolumeStatusNotInstantiated:
+		// Left by an earlier attempt that failed; create the volume again.
+		if err := cs.cloud.DeleteVolume(uuid); err != nil {
+			return nil, status.Errorf(codes.Internal, "remove volume %s left by a failed creation: %v", uuid, err)
+		}
 	case err == nil:
 		if vol.Status == zstack.VolumeStatusDeleted {
 			return nil, status.Errorf(codes.Aborted, "volume %s is being deleted", uuid)
@@ -121,14 +123,29 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 		}
 	}
 	if err != nil {
+		if left, gerr := cs.cloud.GetVolume(uuid); gerr == nil && left.Status == zstack.VolumeStatusNotInstantiated {
+			if derr := cs.cloud.DeleteVolume(uuid); derr != nil {
+				klog.Warningf("remove volume %s left by a failed creation: %v", uuid, derr)
+			}
+		}
 		return nil, err
 	}
 	return createVolumeResponse(vol, source), nil
 }
 
-// volumeTags returns the system tags for a new volume. Multi-node volumes are
-// ZStack shared volumes, which SharedBlock only provisions thick.
-func volumeTags(provisioning string, shared, sharedBlock bool) ([]string, error) {
+// volumeTags returns the system tags for a new volume on primary storage of type
+// psType. Multi-node volumes are ZStack shared volumes, which ZStack provides
+// only on some storage types and SharedBlock only provisions thick. Local
+// storage volumes can only be attached to VMs on their host, which needs
+// topology the driver does not report.
+func volumeTags(provisioning string, shared bool, psType string) ([]string, error) {
+	if psType == zstack.LocalStorageType {
+		return nil, fmt.Errorf("local storage is not supported: ZStack attaches its volumes only to VMs on the same host")
+	}
+	if shared && !slices.Contains(zstack.SharedVolumeStorageTypes, psType) {
+		return nil, fmt.Errorf("multi-node volumes are ZStack shared volumes, which ZStack provides only on %s primary storage, not %s",
+			strings.Join(zstack.SharedVolumeStorageTypes, ", "), psType)
+	}
 	strategy := ""
 	if provisioning != "" {
 		s, ok := provisioningStrategies[strings.ToLower(provisioning)]
@@ -139,7 +156,7 @@ func volumeTags(provisioning string, shared, sharedBlock bool) ([]string, error)
 	}
 	var tags []string
 	if shared {
-		if sharedBlock {
+		if psType == zstack.SharedBlockType {
 			if strategy == thinProvisioning {
 				return nil, fmt.Errorf("multi-node volumes are shared volumes, which SharedBlock provisions thick")
 			}

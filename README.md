@@ -1,7 +1,7 @@
 # zstack-csi
 
-A Kubernetes CSI driver that gives pods ZStack data volumes, for example
-volumes on SharedBlock (sblk) or Ceph primary storage. The Kubernetes nodes are
+A Kubernetes CSI driver that gives pods ZStack data volumes on SharedBlock
+(sblk), Ceph, NFS or SharedMountPoint primary storage. The Kubernetes nodes are
 ZStack VMs; the driver works the way cloud-provider block CSI drivers do:
 
 - The **controller** calls the ZStack API with an AccessKey to create, delete,
@@ -10,8 +10,8 @@ ZStack VMs; the driver works the way cloud-provider block CSI drivers do:
   it to the volume UUID), formats and mounts it. It needs no ZStack credentials.
 
 ZStack keeps doing everything storage-specific (LV activation and locking on
-SharedBlock, RBD images on Ceph, provisioning), so the driver never touches the
-storage itself.
+SharedBlock, RBD images on Ceph, qcow2 files on NFS and SharedMountPoint,
+provisioning), so the driver never touches the storage itself.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) (in Chinese) explains the data path, how a
 node learns its VM UUID, and how this model differs from storage-native CSI
@@ -77,7 +77,7 @@ block volume, a snapshot restored into a larger volume, and a clone.
 | Parameter | Description |
 |---|---|
 | `primaryStorageUuid` | Required. Primary storage that holds the volumes. |
-| `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. Ceph volumes are always thin; ZStack records the setting but does not preallocate. |
+| `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. Ceph, NFS and SharedMountPoint volumes are always thin; ZStack records the setting but does not preallocate. |
 | `csi.storage.k8s.io/fstype` | `ext4` (default) or `xfs`. |
 
 ## ZStack permissions
@@ -138,8 +138,9 @@ admin-only, which is why the driver detects the time zone without it.
 
 - Access modes: ReadWriteOnce as filesystem or raw block; ReadWriteMany and
   ReadOnlyMany as raw block on ZStack shared volumes (`ephemeral::shareable`
-  with virtio-scsi). Applications sharing a device must coordinate their writes
-  and bypass the page cache, as with any shared disk.
+  with virtio-scsi), which ZStack provides only on SharedBlock, Ceph and
+  external (Addon) primary storage. Applications sharing a device must
+  coordinate their writes and bypass the page cache, as with any shared disk.
 - ReadOnlyMany volumes are set read-only on each node with `blockdev --setro`.
 - Cloning a PVC goes through a temporary ZStack snapshot that is deleted once
   the new volume exists.
@@ -156,8 +157,15 @@ admin-only, which is why the driver detects the time zone without it.
 - No topology: every node VM must run in a cluster attached to the primary
   storage. A pod scheduled on another node stays in ContainerCreating because
   the attach fails.
+- Local storage primary storage is not supported. ZStack creates a local
+  storage volume on one host it must be told about and attaches it only to VMs
+  on that host, which would need topology. The controller rejects PVCs on local
+  storage; they stay Pending with an event that says so.
 - Multi-node access is raw block only; ext4 and xfs cannot be mounted on several
   nodes at once, so ReadOnlyMany filesystem volumes are not supported either.
+- The controller rejects ReadWriteMany and ReadOnlyMany PVCs on primary
+  storage without ZStack shared volumes, such as NFS and SharedMountPoint; they
+  stay Pending with an event naming the supported storage types.
 - SharedBlock creates shared volumes raw and thick provisioned (a multi-node
   PVC with `provisioning: thin` is rejected) and cannot snapshot, clone or
   resize them. Kubernetes marks such an expansion infeasible and the volume
@@ -180,7 +188,7 @@ admin-only, which is why the driver detects the time zone without it.
 
 | Component | Version |
 |---|---|
-| ZStack | Cloud 5.5.38.869; SharedBlock primary storage over iSCSI, and Ceph primary storage on ZStone 5.5.12 |
+| ZStack | Cloud 5.5.38.869; SharedBlock primary storage over iSCSI, Ceph primary storage on ZStone 5.5.12, NFS primary storage, and SharedMountPoint primary storage on an NFS mount |
 | Kubernetes | v1.35.10 (kubeadm), containerd 2.2.1 |
 | Node VMs | Ubuntu 24.04, kernel 6.8, virtio-blk disks |
 | Sidecars | as pinned in `charts/zstack-csi/values.yaml` |
@@ -194,15 +202,18 @@ larger volumes, thick provisioning, time zone detection with
 `rest/checkTimeZone` both false and true (including the restart after it
 changes), least-privilege IAM2 AccessKey, and full cleanup. On Ceph primary
 storage, csi-sanity and the same volume checks passed with an admin AccessKey;
-the differences are listed under Known limitations.
+the differences are listed under Known limitations. On NFS and SharedMountPoint
+primary storage, csi-sanity and the single-node volume checks passed with an
+admin AccessKey.
 
 Not tested yet:
 
 - Node operating systems other than Ubuntu 24.04, such as Kylin V10, openEuler
   or other distributions with 4.19 kernels.
 - Kubernetes versions other than 1.35, and arm64 nodes.
-- ZStack versions other than 5.5.38, primary storage other than SharedBlock and
-  Ceph (NFS, local storage and others), and Ceph clusters other than ZStone.
+- ZStack versions other than 5.5.38, primary storage other than SharedBlock,
+  Ceph, NFS and SharedMountPoint (ZBS and others), Ceph clusters other than
+  ZStone, and SharedMountPoint on file systems other than NFS.
 - Controller failover under load, large numbers of volumes or nodes, and
   upgrading the driver while volumes are in use.
 

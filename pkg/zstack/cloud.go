@@ -20,13 +20,23 @@ const (
 	VolumeStatusDeleted = "Deleted"
 	SnapshotStatusReady = "Ready"
 	SharedBlockType     = "SharedBlock"
+	LocalStorageType    = "LocalStorage"
 	defaultPort         = 8080
 	apiContextPath      = "zstack"
 )
 
+// VolumeStatusNotInstantiated is the status of a volume that ZStack failed to
+// create on its primary storage; attaching it would create it on storage of
+// ZStack's choice.
+const VolumeStatusNotInstantiated = "NotInstantiated"
+
 // System tags the ZStack UI sets on a shared data volume; SharedBlock only
 // creates shared volumes thick provisioned.
 var SharedVolumeTags = []string{"ephemeral::shareable", "capability::virtio-scsi"}
+
+// Primary storage types ZStack creates shared volumes on
+// (SupportSharedVolumePrimaryStorage in ZStack's mevoco.xml).
+var SharedVolumeStorageTypes = []string{"Ceph", SharedBlockType, "Addon"}
 
 type (
 	Volume   = view.VolumeInventoryView
