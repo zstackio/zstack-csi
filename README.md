@@ -1,16 +1,17 @@
 # zstack-csi
 
 A Kubernetes CSI driver that gives pods ZStack data volumes, for example
-volumes on SharedBlock (sblk) primary storage. The Kubernetes nodes are ZStack
-VMs; the driver works the way cloud-provider block CSI drivers do:
+volumes on SharedBlock (sblk) or Ceph primary storage. The Kubernetes nodes are
+ZStack VMs; the driver works the way cloud-provider block CSI drivers do:
 
 - The **controller** calls the ZStack API with an AccessKey to create, delete,
   resize and snapshot data volumes and to attach them to the node VMs.
 - The **node** plugin finds the attached disk by its serial number (ZStack sets
   it to the volume UUID), formats and mounts it. It needs no ZStack credentials.
 
-ZStack keeps doing everything storage-specific (LV activation and locking,
-qcow2 chains, provisioning), so the driver never touches the shared VG.
+ZStack keeps doing everything storage-specific (LV activation and locking on
+SharedBlock, RBD images on Ceph, provisioning), so the driver never touches the
+storage itself.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) (in Chinese) explains the data path, how a
 node learns its VM UUID, and how this model differs from storage-native CSI
@@ -76,7 +77,7 @@ block volume, a snapshot restored into a larger volume, and a clone.
 | Parameter | Description |
 |---|---|
 | `primaryStorageUuid` | Required. Primary storage that holds the volumes. |
-| `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. |
+| `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. Ceph volumes are always thin; ZStack records the setting but does not preallocate. |
 | `csi.storage.k8s.io/fstype` | `ext4` (default) or `xfs`. |
 
 ## ZStack permissions
@@ -157,10 +158,16 @@ admin-only, which is why the driver detects the time zone without it.
   the attach fails.
 - Multi-node access is raw block only; ext4 and xfs cannot be mounted on several
   nodes at once, so ReadOnlyMany filesystem volumes are not supported either.
-- SharedBlock creates shared volumes raw and thick provisioned and cannot
-  snapshot, clone or resize them. Kubernetes marks such an expansion infeasible
-  and the volume keeps its size; give multi-node PVCs a StorageClass with
+- SharedBlock creates shared volumes raw and thick provisioned (a multi-node
+  PVC with `provisioning: thin` is rejected) and cannot snapshot, clone or
+  resize them. Kubernetes marks such an expansion infeasible and the volume
+  keeps its size; give multi-node PVCs a StorageClass with
   `allowVolumeExpansion: false` to reject the request up front.
+- Ceph resizes a shared volume only while no running VM has it attached. While
+  Pods use the PVC the controller returns FailedPrecondition, which the resizer
+  treats as offline expansion (`only supports offline expansion and volume is
+  currently in-use`); once those Pods are deleted the expansion completes, and
+  Pods started afterwards see the new size.
 - A ZStack snapshot belongs to its volume and is removed with it, so
   DeleteVolume fails with FailedPrecondition while the volume has snapshots.
   Delete the VolumeSnapshots first.
@@ -173,7 +180,7 @@ admin-only, which is why the driver detects the time zone without it.
 
 | Component | Version |
 |---|---|
-| ZStack | Cloud 5.5.38.869, SharedBlock primary storage over iSCSI |
+| ZStack | Cloud 5.5.38.869; SharedBlock primary storage over iSCSI, and Ceph primary storage on ZStone 5.5.12 |
 | Kubernetes | v1.35.10 (kubeadm), containerd 2.2.1 |
 | Node VMs | Ubuntu 24.04, kernel 6.8, virtio-blk disks |
 | Sidecars | as pinned in `charts/zstack-csi/values.yaml` |
@@ -185,15 +192,17 @@ another node, online expansion (ext4 and XFS), raw block volumes, a shared
 block volume written and read from two nodes, snapshot restore and cloning into
 larger volumes, thick provisioning, time zone detection with
 `rest/checkTimeZone` both false and true (including the restart after it
-changes), least-privilege IAM2 AccessKey, and full cleanup.
+changes), least-privilege IAM2 AccessKey, and full cleanup. On Ceph primary
+storage, csi-sanity and the same volume checks passed with an admin AccessKey;
+the differences are listed under Known limitations.
 
 Not tested yet:
 
 - Node operating systems other than Ubuntu 24.04, such as Kylin V10, openEuler
   or other distributions with 4.19 kernels.
 - Kubernetes versions other than 1.35, and arm64 nodes.
-- ZStack versions other than 5.5.38 and primary storage other than SharedBlock
-  (Ceph, NFS and others).
+- ZStack versions other than 5.5.38, primary storage other than SharedBlock and
+  Ceph (NFS, local storage and others), and Ceph clusters other than ZStone.
 - Controller failover under load, large numbers of volumes or nodes, and
   upgrading the driver while volumes are in use.
 

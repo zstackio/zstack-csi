@@ -9,7 +9,7 @@ zstack-csi 属于“云平台模式”，与 AWS EBS CSI、OpenStack Cinder CSI�
 ```
 zstack-csi（云平台模式）
   K8s controller ──ZStack API──> ZStack 管理节点：建数据云盘，挂到节点云主机
-  节点云主机 <──virtio── 物理机 QEMU <──iSCSI/FC── SharedBlock 存储
+  节点云主机 <──virtio── 物理机 QEMU <──iSCSI/FC── SharedBlock 存储（Ceph 主存储时 QEMU 经 RBD 访问 Ceph）
   节点只看到多了一块本地盘，不直接连接存储
 
 XSKY / Ceph / ZBS（存储原生模式）
@@ -55,7 +55,7 @@ K8s 本身不知道 ZStack，节点和云主机的对应关系是节点插件上
 | 凭据 | 只有一个 ZStack AccessKey，可用 IAM2 最小权限；存储凭据不进 K8s | 存储账号或 CHAP、Ceph key 放在 K8s Secret 和节点上 |
 | 在 ZStack 中的可见性 | 卷就是 ZStack 数据云盘（`pvc-…`），可在 ZStack 里查看、计费、监控 | ZStack 看不到这些卷 |
 | 性能 | 多一层虚拟化（virtio），与普通云主机数据盘相同 | 节点直连存储，路径更短 |
-| 多节点读写（RWX） | 使用 ZStack 共享云盘，只支持 Block 模式，且不能扩容 | 存储原生多点映射；文件存储（NFS、CephFS）还能提供 RWX 文件系统 |
+| 多节点读写（RWX） | 使用 ZStack 共享云盘，只支持 Block 模式；SharedBlock 上不能扩容，Ceph 上要先删掉使用它的 Pod 才能扩容 | 存储原生多点映射；文件存储（NFS、CephFS）还能提供 RWX 文件系统 |
 | 快照、克隆 | ZStack 云盘快照：快照属于源卷，有快照时不能删除源卷 | 存储原生快照，克隆卷通常可以与源卷脱离 |
 | 每节点卷数 | 受云主机磁盘槽位限制，默认上报 24 | 受 iSCSI 会话数和设备数限制 |
 | 适用范围 | 只能在 ZStack 云主机里用，与 EBS CSI 只能在 EC2 上用一样 | 只要网络能通存储就能用 |
@@ -69,4 +69,4 @@ XSKY、Ceph、ZBS 这类云主机能经网络访问的分布式存储，两种�
 - 用存储厂商的 CSI：数据路径更短，但卷不受 ZStack 管理，节点要能访问存储网络并持有存储凭据。
 - 用 zstack-csi：卷由 ZStack 统一管理，节点不需要访问存储网络。
 
-zstack-csi 只调用 ZStack 通用的数据云盘接口，原理上也适用于 Ceph、ZBS 等其他类型的主存储，但目前只在 SharedBlock 上测试过，其他主存储列在 README 的未测试范围里。
+zstack-csi 只调用 ZStack 通用的数据云盘接口，目前在 SharedBlock 和 Ceph（ZStone）主存储上测试过，两者在置备方式和共享卷扩容上的差异见 README 的 Known limitations。NFS、本地存储等其他主存储原理上也适用，列在 README 的未测试范围里。

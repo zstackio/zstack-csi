@@ -67,7 +67,15 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 		return nil, status.Errorf(codes.InvalidArgument, "StorageClass parameter %s is required", ParamPrimaryStorageUUID)
 	}
 	shared := isMultiNode(caps)
-	systemTags, err := volumeTags(params[ParamProvisioning], shared)
+	sharedBlock := false
+	if shared {
+		psType, err := cs.cloud.PrimaryStorageType(psUUID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "get primary storage %s: %v", psUUID, err)
+		}
+		sharedBlock = psType == zstack.SharedBlockType
+	}
+	systemTags, err := volumeTags(params[ParamProvisioning], shared, sharedBlock)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -120,7 +128,7 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 
 // volumeTags returns the system tags for a new volume. Multi-node volumes are
 // ZStack shared volumes, which SharedBlock only provisions thick.
-func volumeTags(provisioning string, shared bool) ([]string, error) {
+func volumeTags(provisioning string, shared, sharedBlock bool) ([]string, error) {
 	strategy := ""
 	if provisioning != "" {
 		s, ok := provisioningStrategies[strings.ToLower(provisioning)]
@@ -129,16 +137,20 @@ func volumeTags(provisioning string, shared bool) ([]string, error) {
 		}
 		strategy = s
 	}
-	if !shared {
-		if strategy == "" {
-			return nil, nil
+	var tags []string
+	if shared {
+		if sharedBlock {
+			if strategy == thinProvisioning {
+				return nil, fmt.Errorf("multi-node volumes are shared volumes, which SharedBlock provisions thick")
+			}
+			strategy = thickProvisioning
 		}
-		return []string{zstack.ProvisioningTag(strategy)}, nil
+		tags = slices.Clone(zstack.SharedVolumeTags)
 	}
-	if strategy == thinProvisioning {
-		return nil, fmt.Errorf("multi-node volumes are shared volumes, which are thick provisioned")
+	if strategy != "" {
+		tags = append(tags, zstack.ProvisioningTag(strategy))
 	}
-	return append(slices.Clone(zstack.SharedVolumeTags), zstack.ProvisioningTag(thickProvisioning)), nil
+	return tags, nil
 }
 
 func (cs *controllerServer) createVolumeFromSnapshot(uuid, name, snapshotID, psUUID string, size int64) (*zstack.Volume, error) {
@@ -408,6 +420,16 @@ func (cs *controllerServer) ControllerExpandVolume(_ context.Context, req *csi.C
 		}
 		if psType == zstack.SharedBlockType {
 			return nil, status.Errorf(codes.InvalidArgument, "ZStack cannot resize shared volume %s on SharedBlock primary storage", volID)
+		}
+		// Other primary storage resizes a shared volume only while no running
+		// VM has it attached. The resizer takes FailedPrecondition as offline
+		// expansion and retries once no Pod uses the volume.
+		vms, err := cs.cloud.AttachedVMs(vol)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "get VMs of volume %s: %v", volID, err)
+		}
+		if len(vms) > 0 {
+			return nil, status.Errorf(codes.FailedPrecondition, "ZStack resizes shared volume %s only while it is detached, but it is attached to VMs %v; stop the Pods that use it", volID, vms)
 		}
 	}
 	if vol, err = cs.cloud.ResizeVolume(volID, size); err != nil {
