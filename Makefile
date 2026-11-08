@@ -43,7 +43,7 @@ package: image
 	for f in $(SNAPSHOT_FILES); do curl -fsSL $(SNAPSHOT_URL)/$$f -o $(PKG)/snapshot/$$(basename $$f) || exit 1; done
 	sed -i 's#image: .*/snapshot-controller:.*#image: $(SNAPSHOT_CONTROLLER)#' $(PKG)/snapshot/setup-snapshot-controller.yaml
 	cp -r charts/zstack-csi examples $(PKG)/
-	cp README.md ARCHITECTURE.md $(PKG)/
+	cp README.md ARCHITECTURE.md LICENSE $(PKG)/
 	sed 's/@VERSION@/$(VERSION)/g' build/INSTALL.md > $(PKG)/INSTALL.md
 	tar -C _output -czf _output/zstack-csi-$(VERSION).tgz zstack-csi-$(VERSION)
 
