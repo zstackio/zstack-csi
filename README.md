@@ -1,8 +1,9 @@
 # zstack-csi
 
 A Kubernetes CSI driver that gives pods ZStack data volumes on SharedBlock
-(sblk), Ceph, NFS or SharedMountPoint primary storage. The Kubernetes nodes are
-ZStack VMs; the driver works the way cloud-provider block CSI drivers do:
+(sblk), Ceph, NFS, SharedMountPoint or ZBS primary storage. The Kubernetes
+nodes are ZStack VMs; the driver works the way cloud-provider block CSI drivers
+do:
 
 - The **controller** calls the ZStack API with an AccessKey to create, delete,
   resize and snapshot data volumes and to attach them to the node VMs.
@@ -37,6 +38,8 @@ drivers.
   snapshot-controller from
   [external-snapshotter](https://github.com/kubernetes-csi/external-snapshotter).
 - The driver namespace must allow privileged pods.
+- ZBS primary storage outputs volumes over CBD (default protocol `CBD`). Vhost
+  disks carry no serial number, so the node plugin cannot find them.
 
 ## Install
 
@@ -71,7 +74,7 @@ block volume, a snapshot restored into a larger volume, and a clone.
 | Parameter | Description |
 |---|---|
 | `primaryStorageUuid` | Required. Primary storage that holds the volumes. |
-| `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. Ceph, NFS and SharedMountPoint volumes are always thin; ZStack records the setting but does not preallocate. |
+| `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. Ceph, NFS, SharedMountPoint and ZBS volumes are always thin; ZStack records the setting but does not preallocate. |
 | `csi.storage.k8s.io/fstype` | `ext4` (default) or `xfs`. |
 
 ## ZStack permissions
@@ -112,6 +115,7 @@ zstack-cli CreateAccessKey accountUuid=<project account> userUuid=<member>
       "org.zstack.header.volume.APIDeleteDataVolumeMsg",
       "org.zstack.header.volume.APIExpungeDataVolumeMsg",
       "org.zstack.header.volume.APIResizeDataVolumeMsg",
+      "org.zstack.header.volume.APIFlattenVolumeMsg",
       "org.zstack.header.volume.APIAttachDataVolumeToVmMsg",
       "org.zstack.header.volume.APIDetachDataVolumeFromVmMsg",
       "org.zstack.mevoco.APIQueryShareableVolumeVmInstanceRefMsg",
@@ -131,11 +135,15 @@ completeness.
 - Access modes: ReadWriteOnce as filesystem or raw block; ReadWriteMany and
   ReadOnlyMany as raw block on ZStack shared volumes (`ephemeral::shareable`
   with virtio-scsi), which ZStack provides only on SharedBlock, Ceph and
-  external (Addon) primary storage. Applications sharing a device must
-  coordinate their writes and bypass the page cache, as with any shared disk.
+  external (Addon) primary storage such as ZBS. Applications sharing a device
+  must coordinate their writes and bypass the page cache, as with any shared
+  disk.
 - ReadOnlyMany volumes are set read-only on each node with `blockdev --setro`.
 - Cloning a PVC goes through a temporary ZStack snapshot that is deleted once
   the new volume exists.
+- On ZBS, a volume created from a snapshot (a clone or a restore) keeps
+  referencing it, so the controller flattens the new volume. Creating it takes
+  longer for large volumes, as the data is copied.
 - Sizes are rounded up to whole GiB.
 - Online expansion: the controller resizes the volume, the node grows the
   filesystem.
@@ -162,8 +170,8 @@ completeness.
 - SharedBlock creates shared volumes thick provisioned (a multi-node PVC with
   `provisioning: thin` is rejected) and cannot snapshot or resize them.
   Give multi-node PVCs a StorageClass with `allowVolumeExpansion: false`.
-- Ceph resizes a shared volume only while it is detached from every VM: the
-  expansion completes after the Pods using it are deleted.
+- On Ceph and ZBS, a shared volume is resized only while it is detached from
+  every VM: the expansion completes after the Pods using it are deleted.
 - A ZStack snapshot belongs to its volume and is removed with it, so
   DeleteVolume fails with FailedPrecondition while the volume has snapshots.
   Delete the VolumeSnapshots first.
@@ -173,7 +181,7 @@ completeness.
 
 | Component | Version |
 |---|---|
-| ZStack | Cloud 5.5.38 with SharedBlock, Ceph, NFS and SharedMountPoint (on NFS) primary storage |
+| ZStack | Cloud 5.5.38 with SharedBlock, Ceph, NFS, SharedMountPoint (on NFS) and ZBS (CBD) primary storage |
 | Kubernetes | v1.35 (kubeadm), containerd 2.2 |
 | Node VMs | Ubuntu 24.04, kernel 6.8 |
 
