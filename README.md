@@ -170,8 +170,8 @@ completeness.
 - SharedBlock creates shared volumes thick provisioned (a multi-node PVC with
   `provisioning: thin` is rejected) and cannot snapshot or resize them.
   Give multi-node PVCs a StorageClass with `allowVolumeExpansion: false`.
-- Ceph resizes a shared volume only while it is detached from every VM: the
-  expansion completes after the Pods using it are deleted.
+- On Ceph and ZBS, a shared volume is resized only while it is detached from
+  every VM: the expansion completes after the Pods using it are deleted.
 - A ZStack snapshot belongs to its volume and is removed with it, so
   DeleteVolume fails with FailedPrecondition while the volume has snapshots.
   Delete the VolumeSnapshots first.
