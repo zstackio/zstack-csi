@@ -32,8 +32,8 @@ test:
 image: build
 	$(ENGINE) build $(BUILD_FLAGS) --platform linux/$(ARCH) -f build/Dockerfile -t $(IMAGE):$(VERSION) .
 
-# Offline package in the layout of zbs-csi: every image in one archive, the
-# chart, the VolumeSnapshot components matching csi-snapshotter, and the docs.
+# Offline package: every image in one archive, the chart, the VolumeSnapshot
+# components matching csi-snapshotter, and the docs.
 # Needs access to registry.k8s.io and GitHub.
 package: image
 	rm -rf $(PKG) && mkdir -p $(PKG)/snapshot

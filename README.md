@@ -9,13 +9,12 @@ ZStack VMs; the driver works the way cloud-provider block CSI drivers do:
 - The **node** plugin finds the attached disk by its serial number (ZStack sets
   it to the volume UUID), formats and mounts it. It needs no ZStack credentials.
 
-ZStack keeps doing everything storage-specific (LV activation and locking on
-SharedBlock, RBD images on Ceph, qcow2 files on NFS and SharedMountPoint,
-provisioning), so the driver never touches the storage itself.
+ZStack keeps doing everything storage-specific, so the driver never touches
+the storage itself.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) (in Chinese) explains the data path, how a
 node learns its VM UUID, and how this model differs from storage-native CSI
-drivers such as XSKY, Ceph and ZBS.
+drivers.
 
 | CSI call | ZStack API |
 |---|---|
@@ -32,14 +31,9 @@ drivers such as XSKY, Ceph and ZBS.
 - All node VMs run in clusters attached to the primary storage named in the
   StorageClass; the driver does not report topology.
 - The controller pods can reach the ZStack management node API (port 8080).
-- Node and management node clocks are synchronized (NTP). ZStack accepts an
-  AccessKey request only within 15 minutes of its own clock; the controller
-  detects the management node's time zone at start-up, because with the default
-  global config `rest/checkTimeZone=false` ZStack compares the wall-clock time
-  and ignores the zone. If ZStack later rejects the signature, for example after
-  a daylight-saving change, the controller exits and detects it again on restart.
-- Kubernetes 1.25 or later is the minimum of the bundled sidecars; only 1.35
-  has been tested (see below). Snapshots need the VolumeSnapshot CRDs and
+- Node and management node clocks are synchronized (NTP). ZStack rejects
+  AccessKey requests more than 15 minutes off its own clock.
+- Kubernetes 1.25 or later, the minimum of the bundled sidecars. Snapshots need the VolumeSnapshot CRDs and
   snapshot-controller from
   [external-snapshotter](https://github.com/kubernetes-csi/external-snapshotter).
 - The driver namespace must allow privileged pods.
@@ -65,7 +59,7 @@ drivers such as XSKY, Ceph and ZBS.
      --set volumeSnapshotClass.create=true
    ```
 
-   `imgurl` is prepended to every image, as in zbs-csi. Use
+   `imgurl` is prepended to every image. Use
    `zstack.existingSecret` instead of the two key values to keep the AccessKey
    out of Helm values. `make manifests` renders plain YAML.
 
@@ -92,8 +86,7 @@ the volumes the driver creates belong to that identity too.
 - **Least privilege (IAM2).** Put the node VMs in an IAM2 project and create
   the AccessKey for a project member whose only role is the one below. ZStack
   only restricts keys of IAM2 members; it always makes a normal account's key
-  account-wide. With this role the driver passes all tests, and write APIs
-  outside it are denied.
+  account-wide.
 
 ```sh
 zstack-cli CreateIAM2Project name=k8s
@@ -130,9 +123,8 @@ zstack-cli CreateAccessKey accountUuid=<project account> userUuid=<member>
 ]
 ```
 
-GetVersion needs no credentials. Project members may run query APIs by default;
-they are listed for completeness. ZStack treats GetPlatformTimeZone as
-admin-only, which is why the driver detects the time zone without it.
+Project members may run query APIs by default; they are listed for
+completeness.
 
 ## Behavior
 
@@ -147,7 +139,7 @@ admin-only, which is why the driver detects the time zone without it.
 - Sizes are rounded up to whole GiB.
 - Online expansion: the controller resizes the volume, the node grows the
   filesystem.
-- XFS is created without `bigtime` and `inobtcount` so that node kernels older
+- XFS is created without `bigtime` and `inobtcount`, so node kernels older
   than 5.10 can mount it.
 - `node.maxVolumesPerNode` (default 24) should match the ZStack global config
   `kvm/dataVolume.maxNum`.
@@ -157,25 +149,21 @@ admin-only, which is why the driver detects the time zone without it.
 - No topology: every node VM must run in a cluster attached to the primary
   storage. A pod scheduled on another node stays in ContainerCreating because
   the attach fails.
-- Local storage primary storage is not supported. ZStack creates a local
-  storage volume on one host it must be told about and attaches it only to VMs
-  on that host, which would need topology. The controller rejects PVCs on local
-  storage; they stay Pending with an event that says so.
+- Local storage primary storage is not supported: its volumes attach only to
+  VMs on the same host, which would need topology. The controller rejects PVCs
+  on it.
 - Multi-node access is raw block only; ext4 and xfs cannot be mounted on several
   nodes at once, so ReadOnlyMany filesystem volumes are not supported either.
+  Shared volumes cannot be cloned, and multi-node volumes cannot be created
+  from a snapshot or another volume.
 - The controller rejects ReadWriteMany and ReadOnlyMany PVCs on primary
   storage without ZStack shared volumes, such as NFS and SharedMountPoint; they
   stay Pending with an event naming the supported storage types.
-- SharedBlock creates shared volumes raw and thick provisioned (a multi-node
-  PVC with `provisioning: thin` is rejected) and cannot snapshot, clone or
-  resize them. Kubernetes marks such an expansion infeasible and the volume
-  keeps its size; give multi-node PVCs a StorageClass with
-  `allowVolumeExpansion: false` to reject the request up front.
-- Ceph resizes a shared volume only while no running VM has it attached. While
-  Pods use the PVC the controller returns FailedPrecondition, which the resizer
-  treats as offline expansion (`only supports offline expansion and volume is
-  currently in-use`); once those Pods are deleted the expansion completes, and
-  Pods started afterwards see the new size.
+- SharedBlock creates shared volumes thick provisioned (a multi-node PVC with
+  `provisioning: thin` is rejected) and cannot snapshot or resize them.
+  Give multi-node PVCs a StorageClass with `allowVolumeExpansion: false`.
+- Ceph resizes a shared volume only while it is detached from every VM: the
+  expansion completes after the Pods using it are deleted.
 - A ZStack snapshot belongs to its volume and is removed with it, so
   DeleteVolume fails with FailedPrecondition while the volume has snapshots.
   Delete the VolumeSnapshots first.
@@ -185,34 +173,9 @@ admin-only, which is why the driver detects the time zone without it.
 
 | Component | Version |
 |---|---|
-| ZStack | Cloud 5.5.38.869; SharedBlock primary storage over iSCSI, Ceph primary storage on ZStone 5.5.12, NFS primary storage, and SharedMountPoint primary storage on an NFS mount |
-| Kubernetes | v1.35.10 (kubeadm), containerd 2.2.1 |
-| Node VMs | Ubuntu 24.04, kernel 6.8, virtio-blk disks |
-| Sidecars | as pinned in `charts/zstack-csi/values.yaml` |
-
-[csi-sanity](https://github.com/kubernetes-csi/csi-test) v5.6.0 against the live
-ZStack API passes; skipped specs cover capabilities the driver does not
-declare. End-to-end checks covered dynamic provisioning, moving a pod to
-another node, online expansion (ext4 and XFS), raw block volumes, a shared
-block volume written and read from two nodes, snapshot restore and cloning into
-larger volumes, thick provisioning, time zone detection with
-`rest/checkTimeZone` both false and true (including the restart after it
-changes), least-privilege IAM2 AccessKey, and full cleanup. On Ceph primary
-storage, csi-sanity and the same volume checks passed with an admin AccessKey;
-the differences are listed under Known limitations. On NFS and SharedMountPoint
-primary storage, csi-sanity and the single-node volume checks passed with an
-admin AccessKey.
-
-Not tested yet:
-
-- Node operating systems other than Ubuntu 24.04, such as Kylin V10, openEuler
-  or other distributions with 4.19 kernels.
-- Kubernetes versions other than 1.35, and arm64 nodes.
-- ZStack versions other than 5.5.38, primary storage other than SharedBlock,
-  Ceph, NFS and SharedMountPoint (ZBS and others), Ceph clusters other than
-  ZStone, and SharedMountPoint on file systems other than NFS.
-- Controller failover under load, large numbers of volumes or nodes, and
-  upgrading the driver while volumes are in use.
+| ZStack | Cloud 5.5.38 with SharedBlock, Ceph, NFS and SharedMountPoint (on NFS) primary storage |
+| Kubernetes | v1.35 (kubeadm), containerd 2.2 |
+| Node VMs | Ubuntu 24.04, kernel 6.8 |
 
 ## Development
 

@@ -1,8 +1,8 @@
 # zstack-csi 对接方式说明
 
-zstack-csi 是标准的 CSI 驱动，K8s 侧的用法与其他 CSI 驱动相同：StorageClass、PVC、快照、扩容都按 K8s 的标准方式使用。它和 XSKY、Ceph、ZBS 等存储自带的 CSI 不同的地方在于：**建盘时调用的是谁的接口，以及盘怎样到达节点**。
+zstack-csi 是标准的 CSI 驱动，K8s 侧的用法与其他 CSI 驱动相同：StorageClass、PVC、快照、扩容都按 K8s 的标准方式使用。它和 Ceph、ZBS 等存储自带的 CSI 不同的地方在于：**建盘时调用的是谁的接口，以及盘怎样到达节点**。
 
-zstack-csi 属于“云平台模式”，与 AWS EBS CSI、OpenStack Cinder CSI、vSphere CSI 是同一类；XSKY、Ceph（ceph-csi）、ZBS CSI 属于“存储原生模式”。
+zstack-csi 属于“云平台模式”，与 AWS EBS CSI、OpenStack Cinder CSI、vSphere CSI 是同一类；Ceph（ceph-csi）、ZBS CSI 属于“存储原生模式”。
 
 ## 数据路径
 
@@ -12,7 +12,7 @@ zstack-csi（云平台模式）
   节点云主机 <──virtio── 物理机 QEMU <──iSCSI/FC── SharedBlock 存储（Ceph 主存储时 QEMU 经 RBD 访问 Ceph）
   节点只看到多了一块本地盘，不直接连接存储
 
-XSKY / Ceph / ZBS（存储原生模式）
+Ceph / ZBS（存储原生模式）
   K8s controller ──存储 API──> 存储系统：建 LUN 或 RBD 镜像
   节点 ──iSCSI / rbd / nbd 经网络──> 存储集群
   节点自己登录存储、映射设备
@@ -47,7 +47,7 @@ K8s 本身不知道 ZStack，节点和云主机的对应关系是节点插件上
 
 ## 与存储原生 CSI 的对比
 
-| | zstack-csi | XSKY / Ceph / ZBS CSI |
+| | zstack-csi | 存储原生 CSI（ceph-csi、ZBS CSI 等） |
 |---|---|---|
 | controller 调用 | ZStack API（AccessKey） | 存储系统 API |
 | 盘怎样到达节点 | ZStack 热插到云主机 | 节点自己登录存储（iSCSI 登录、rbd map、nbd 连接） |
@@ -55,8 +55,8 @@ K8s 本身不知道 ZStack，节点和云主机的对应关系是节点插件上
 | 凭据 | 只有一个 ZStack AccessKey，可用 IAM2 最小权限；存储凭据不进 K8s | 存储账号或 CHAP、Ceph key 放在 K8s Secret 和节点上 |
 | 在 ZStack 中的可见性 | 卷就是 ZStack 数据云盘（`pvc-…`），可在 ZStack 里查看、计费、监控 | ZStack 看不到这些卷 |
 | 性能 | 多一层虚拟化（virtio），与普通云主机数据盘相同 | 节点直连存储，路径更短 |
-| 多节点读写（RWX） | 使用 ZStack 共享云盘，只支持 Block 模式；ZStack 只在 SharedBlock、Ceph 和外部（Addon）主存储上提供共享云盘，NFS、SharedMountPoint 上的多节点 PVC 由驱动直接拒绝；SharedBlock 上不能扩容，Ceph 上要先删掉使用它的 Pod 才能扩容 | 存储原生多点映射；文件存储（NFS、CephFS）还能提供 RWX 文件系统 |
-| 快照、克隆 | ZStack 云盘快照：快照属于源卷，有快照时不能删除源卷 | 存储原生快照，克隆卷通常可以与源卷脱离 |
+| 多节点读写（RWX） | 使用 ZStack 共享云盘，只支持 Block 模式，且只在 SharedBlock、Ceph 和外部（Addon）主存储上可用 | 存储原生多点映射；文件存储（NFS、CephFS）还能提供 RWX 文件系统 |
+| 快照、克隆 | ZStack 云盘快照：快照属于源卷，有快照时不能删除源卷；克隆卷与源卷相互独立 | 存储原生快照，克隆卷通常可以与源卷脱离 |
 | 每节点卷数 | 受云主机磁盘槽位限制，默认上报 24 | 受 iSCSI 会话数和设备数限制 |
 | 适用范围 | 只能在 ZStack 云主机里用，与 EBS CSI 只能在 EC2 上用一样 | 只要网络能通存储就能用 |
 
@@ -64,9 +64,9 @@ K8s 本身不知道 ZStack，节点和云主机的对应关系是节点插件上
 
 SharedBlock 是只有物理机能看到的 SAN LUN，ZStack 在上面建共享卷组，云主机没有到存储的网络路径，所以无法让节点直连存储，只能通过 ZStack API 由物理机把盘交给云主机。
 
-XSKY、Ceph、ZBS 这类云主机能经网络访问的分布式存储，两种方式都可以选：
+Ceph、ZBS 这类云主机能经网络访问的分布式存储，两种方式都可以选：
 
 - 用存储厂商的 CSI：数据路径更短，但卷不受 ZStack 管理，节点要能访问存储网络并持有存储凭据。
 - 用 zstack-csi：卷由 ZStack 统一管理，节点不需要访问存储网络。
 
-zstack-csi 只调用 ZStack 通用的数据云盘接口，目前在 SharedBlock、Ceph（ZStone）、NFS 和 SharedMountPoint 主存储上测试过，各自在置备方式、共享卷和扩容上的差异见 README 的 Known limitations。本地存储不支持，驱动直接拒绝建卷：本地存储的云盘只在一台物理机上，只能挂给这台物理机上的云主机，而驱动不上报拓扑，K8s 无法按物理机调度 Pod。ZBS 等其他主存储原理上也适用，列在 README 的未测试范围里。
+zstack-csi 只调用 ZStack 通用的数据云盘接口，目前在 SharedBlock、Ceph、NFS 和 SharedMountPoint 主存储上测试过，各自在置备方式、共享卷和扩容上的差异见 README 的 Known limitations。本地存储不支持，驱动直接拒绝建卷：本地存储的云盘只在一台物理机上，只能挂给这台物理机上的云主机，而驱动不上报拓扑，K8s 无法按物理机调度 Pod。
