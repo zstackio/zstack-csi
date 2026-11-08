@@ -74,7 +74,7 @@ block volume, a snapshot restored into a larger volume, and a clone.
 | Parameter | Description |
 |---|---|
 | `primaryStorageUuid` | Required. Primary storage that holds the volumes. |
-| `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. Ceph, NFS and SharedMountPoint volumes are always thin; ZStack records the setting but does not preallocate. |
+| `provisioning` | `thin` or `thick`. Empty keeps the primary storage default. Ceph, NFS, SharedMountPoint and ZBS volumes are always thin; ZStack records the setting but does not preallocate. |
 | `csi.storage.k8s.io/fstype` | `ext4` (default) or `xfs`. |
 
 ## ZStack permissions
