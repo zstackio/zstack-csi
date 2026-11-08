@@ -32,8 +32,8 @@ test:
 image: build
 	$(ENGINE) build $(BUILD_FLAGS) --platform linux/$(ARCH) -f build/Dockerfile -t $(IMAGE):$(VERSION) .
 
-# Offline package in the layout of zbs-csi: every image in one archive, the
-# chart, the VolumeSnapshot components matching csi-snapshotter, and the docs.
+# Offline package: every image in one archive, the chart, the VolumeSnapshot
+# components matching csi-snapshotter, and the docs.
 # Needs access to registry.k8s.io and GitHub.
 package: image
 	rm -rf $(PKG) && mkdir -p $(PKG)/snapshot
@@ -43,7 +43,7 @@ package: image
 	for f in $(SNAPSHOT_FILES); do curl -fsSL $(SNAPSHOT_URL)/$$f -o $(PKG)/snapshot/$$(basename $$f) || exit 1; done
 	sed -i 's#image: .*/snapshot-controller:.*#image: $(SNAPSHOT_CONTROLLER)#' $(PKG)/snapshot/setup-snapshot-controller.yaml
 	cp -r charts/zstack-csi examples $(PKG)/
-	cp README.md $(PKG)/README.md
+	cp README.md ARCHITECTURE.md LICENSE $(PKG)/
 	sed 's/@VERSION@/$(VERSION)/g' build/INSTALL.md > $(PKG)/INSTALL.md
 	tar -C _output -czf _output/zstack-csi-$(VERSION).tgz zstack-csi-$(VERSION)
 

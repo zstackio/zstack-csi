@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/container-storage-interface/spec v1.12.0
-	github.com/zstackio/zstack-sdk-go-v2 v0.0.10
+	github.com/zstackio/zstack-sdk-go-v2 v0.0.11
 	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12

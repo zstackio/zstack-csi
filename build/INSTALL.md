@@ -9,6 +9,8 @@ The package holds:
 | `snapshot/` | VolumeSnapshot CRDs and snapshot-controller matching the bundled csi-snapshotter |
 | `examples/` | Sample PVCs and pods |
 | `README.md` | Driver documentation, including the ZStack permissions it needs |
+| `ARCHITECTURE.md` | How the driver connects to ZStack and how it differs from storage-native CSI drivers (in Chinese) |
+| `LICENSE` | Apache License 2.0 |
 
 Kubernetes nodes must be ZStack VMs; see the requirements in `README.md`.
 
