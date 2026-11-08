@@ -102,6 +102,13 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 		if vol.Size < size || (limit > 0 && vol.Size > limit) || vol.IsShareable != shared {
 			return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists with size %d, shared %t", name, vol.Size, vol.IsShareable)
 		}
+		if source != nil {
+			// An earlier attempt may have stopped before flattening the volume
+			// or deleting the clone snapshot.
+			if err := cs.flattenVolume(uuid, psType); err != nil {
+				return nil, err
+			}
+		}
 		if source.GetVolume() != nil {
 			if err := cs.deleteCloneSnapshot(name); err != nil {
 				return nil, err
@@ -114,9 +121,9 @@ func (cs *controllerServer) CreateVolume(_ context.Context, req *csi.CreateVolum
 
 	switch {
 	case source.GetSnapshot() != nil:
-		vol, err = cs.createVolumeFromSnapshot(uuid, name, source.GetSnapshot().GetSnapshotId(), psUUID, size)
+		vol, err = cs.createVolumeFromSnapshot(uuid, name, source.GetSnapshot().GetSnapshotId(), psUUID, psType, size)
 	case source.GetVolume() != nil:
-		vol, err = cs.cloneVolume(uuid, name, source.GetVolume().GetVolumeId(), psUUID, size)
+		vol, err = cs.cloneVolume(uuid, name, source.GetVolume().GetVolumeId(), psUUID, psType, size)
 	default:
 		if vol, err = cs.cloud.CreateVolume(uuid, name, size, psUUID, systemTags); err != nil {
 			err = status.Errorf(codes.Internal, "create volume %s: %v", name, err)
@@ -170,7 +177,7 @@ func volumeTags(provisioning string, shared bool, psType string) ([]string, erro
 	return tags, nil
 }
 
-func (cs *controllerServer) createVolumeFromSnapshot(uuid, name, snapshotID, psUUID string, size int64) (*zstack.Volume, error) {
+func (cs *controllerServer) createVolumeFromSnapshot(uuid, name, snapshotID, psUUID, psType string, size int64) (*zstack.Volume, error) {
 	if !isUUID(snapshotID) {
 		return nil, status.Errorf(codes.NotFound, "snapshot %s not found", snapshotID)
 	}
@@ -184,6 +191,9 @@ func (cs *controllerServer) createVolumeFromSnapshot(uuid, name, snapshotID, psU
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "create volume %s from snapshot %s: %v", name, snapshotID, err)
 	}
+	if err := cs.flattenVolume(uuid, psType); err != nil {
+		return nil, err
+	}
 	if vol.Size < size {
 		if vol, err = cs.cloud.ResizeVolume(uuid, size); err != nil {
 			return nil, status.Errorf(codes.Internal, "resize volume %s restored from snapshot: %v", uuid, err)
@@ -193,9 +203,9 @@ func (cs *controllerServer) createVolumeFromSnapshot(uuid, name, snapshotID, psU
 }
 
 // cloneVolume copies a volume through a temporary snapshot because ZStack has
-// no direct volume copy. A volume created from a snapshot does not depend on
-// it, so the snapshot is removed once the copy exists.
-func (cs *controllerServer) cloneVolume(uuid, name, sourceID, psUUID string, size int64) (*zstack.Volume, error) {
+// no direct volume copy. The new volume does not depend on the snapshot once
+// it is flattened, so the snapshot is removed once the copy exists.
+func (cs *controllerServer) cloneVolume(uuid, name, sourceID, psUUID, psType string, size int64) (*zstack.Volume, error) {
 	if !isUUID(sourceID) {
 		return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceID)
 	}
@@ -217,7 +227,7 @@ func (cs *controllerServer) cloneVolume(uuid, name, sourceID, psUUID string, siz
 	} else if err != nil {
 		return nil, status.Errorf(codes.Internal, "get snapshot %s: %v", snapUUID, err)
 	}
-	vol, err := cs.createVolumeFromSnapshot(uuid, name, snapUUID, psUUID, size)
+	vol, err := cs.createVolumeFromSnapshot(uuid, name, snapUUID, psUUID, psType, size)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +235,20 @@ func (cs *controllerServer) cloneVolume(uuid, name, sourceID, psUUID string, siz
 		return nil, err
 	}
 	return vol, nil
+}
+
+// flattenVolume makes a volume created from a snapshot independent of it. On
+// external (Addon) primary storage such as ZBS such a volume keeps referencing
+// the snapshot, which then cannot be deleted; on the other storage types it
+// does not.
+func (cs *controllerServer) flattenVolume(uuid, psType string) error {
+	if psType != zstack.AddonType {
+		return nil
+	}
+	if err := cs.cloud.FlattenVolume(uuid); err != nil {
+		return status.Errorf(codes.Internal, "flatten volume %s: %v", uuid, err)
+	}
+	return nil
 }
 
 func (cs *controllerServer) deleteCloneSnapshot(name string) error {

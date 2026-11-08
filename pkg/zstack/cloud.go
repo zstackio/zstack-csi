@@ -21,6 +21,7 @@ const (
 	SnapshotStatusReady = "Ready"
 	SharedBlockType     = "SharedBlock"
 	LocalStorageType    = "LocalStorage"
+	AddonType           = "Addon"
 	defaultPort         = 8080
 	apiContextPath      = "zstack"
 )
@@ -35,7 +36,7 @@ const VolumeStatusNotInstantiated = "NotInstantiated"
 var SharedVolumeTags = []string{"ephemeral::shareable", "capability::virtio-scsi"}
 
 // Primary storage types ZStack creates shared volumes on.
-var SharedVolumeStorageTypes = []string{"Ceph", SharedBlockType, "Addon"}
+var SharedVolumeStorageTypes = []string{"Ceph", SharedBlockType, AddonType}
 
 type (
 	Volume   = view.VolumeInventoryView
@@ -146,6 +147,13 @@ func (c *Cloud) DeleteVolume(uuid string) error {
 		}
 	}
 	return check(c.cli.ExpungeDataVolume(uuid))
+}
+
+// FlattenVolume copies into a volume the data it shares with the snapshot it
+// was created from, so that the snapshot can be deleted.
+func (c *Cloud) FlattenVolume(uuid string) error {
+	_, err := c.cli.FlattenVolume(uuid, param.FlattenVolumeParam{})
+	return check(err)
 }
 
 func (c *Cloud) ResizeVolume(uuid string, size int64) (*Volume, error) {
